@@ -554,7 +554,12 @@ async function ensurePanelVisible(page, panelLocator, index, scrollers = [], att
 }
 
 (async () => {
+  // 依日期使用子資料夾存放下載結果
+  if (argv.date && isValidYmd(argv.date)) {
+    argv.outDir = path.join(argv.outDir, argv.date);
+  }
   await ensureDir(argv.outDir);
+  console.log(`[INFO] 輸出資料夾: ${argv.outDir}`);
   const browser = await chromium.launch({ headless: argv.headless, slowMo: argv.slowMo });
   const context = await browser.newContext({
     acceptDownloads: true,
