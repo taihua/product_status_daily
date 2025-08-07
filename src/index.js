@@ -31,6 +31,11 @@ const argv = yargs(hideBin(process.argv))
     describe: '等待逾時（毫秒）',
     default: 45000,
   })
+  .option('date', {
+    type: 'string',
+    describe: '台灣時區 (GMT+8) 的單日日期，格式 YYYY-MM-DD；若提供則以此日為時間區間產生 _g.time',
+    demandOption: false,
+  })
   .help()
   .parse();
 
@@ -40,6 +45,72 @@ function sanitizeFilename(name) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 180);
+}
+
+function isValidYmd(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function nextDayYmd(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const base = new Date(Date.UTC(y, m - 1, d));
+  const next = new Date(base.getTime() + 24 * 60 * 60 * 1000);
+  const mm = String(next.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(next.getUTCDate()).padStart(2, '0');
+  return `${next.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+function computeTaipeiDayRangeUtc(ymd) {
+  if (!isValidYmd(ymd)) throw new Error(`無效日期格式，需為 YYYY-MM-DD：${ymd}`);
+  // 以固定偏移 +08:00 計算該日在台灣時區的起迄，轉為 UTC ISO
+  const fromIso = new Date(`${ymd}T00:00:00.000+08:00`).toISOString();
+  const toIso = new Date(`${ymd}T23:59:59+08:00`).toISOString();
+  return { fromIso, toIso };
+}
+
+function buildGTime(fromIso, toIso) {
+  return `_g=(filters:!(),refreshInterval:(pause:!t,value:0),time:(from:'${fromIso}',to:'${toIso}'))`;
+}
+
+function upsertGInHash(hash, gStr) {
+  const qIndex = hash.indexOf('?');
+  if (qIndex === -1) {
+    return `${hash}?${gStr}`;
+  }
+  const path = hash.slice(0, qIndex);
+  let query = hash.slice(qIndex + 1);
+  const gIdx = query.indexOf('_g=');
+  if (gIdx === -1) {
+    if (query.length === 0) return `${path}?${gStr}`;
+    return `${path}?${query}&${gStr}`;
+  }
+  const amp = query.indexOf('&', gIdx);
+  if (amp === -1) {
+    query = query.slice(0, gIdx) + gStr;
+  } else {
+    query = query.slice(0, gIdx) + gStr + query.slice(amp);
+  }
+  return `${path}?${query}`;
+}
+
+function upsertGInUrl(url, gStr) {
+  const hashPos = url.indexOf('#');
+  if (hashPos === -1) {
+    // 少見情況：沒有 hash，就直接用一般 query upsert
+    const qPos = url.indexOf('?');
+    if (qPos === -1) return `${url}?${gStr}`;
+    const path = url.slice(0, qPos);
+    let query = url.slice(qPos + 1);
+    const gIdx = query.indexOf('_g=');
+    if (gIdx === -1) return `${path}?${query}&${gStr}`;
+    const amp = query.indexOf('&', gIdx);
+    if (amp === -1) query = query.slice(0, gIdx) + gStr; else query = query.slice(0, gIdx) + gStr + query.slice(amp);
+    return `${path}?${query}`;
+  }
+  const base = url.slice(0, hashPos);
+  const hash = url.slice(hashPos + 1);
+  const newHash = upsertGInHash(hash, gStr);
+  return `${base}#${newHash}`;
 }
 
 async function closeInspector(page, timeout = 8000) {
@@ -426,8 +497,20 @@ async function ensurePanelVisible(page, panelLocator, index, scrollers = [], att
   });
   const page = await context.newPage();
 
-  console.log(`[INFO] 開啟 URL: ${argv.url}`);
-  await page.goto(argv.url, { waitUntil: 'load', timeout: argv.timeout });
+  let targetUrl = argv.url;
+  if (argv.date) {
+    try {
+      const { fromIso, toIso } = computeTaipeiDayRangeUtc(argv.date);
+      const g = buildGTime(fromIso, toIso);
+      targetUrl = upsertGInUrl(argv.url, g);
+      console.log(`[INFO] 使用台灣日期 ${argv.date} 對應 UTC 範圍`);
+      console.log(`[INFO] from: ${fromIso} | to: ${toIso}`);
+    } catch (e) {
+      console.warn(`[WARN] 日期解析失敗，改用原始 URL：${e.message || e}`);
+    }
+  }
+  console.log(`[INFO] 開啟 URL: ${targetUrl}`);
+  await page.goto(targetUrl, { waitUntil: 'load', timeout: argv.timeout });
   // 盡量等到資源安定，避免登入按鈕尚未渲染
   await page.waitForLoadState('networkidle', { timeout: argv.timeout }).catch(() => {});
 

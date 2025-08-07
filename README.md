@@ -18,12 +18,27 @@ node src/index.js \
   --headless=true
 ```
 
+或是直接指定台灣時區日期（GMT+8），由程式自動計算該日的 UTC 範圍並注入 `_g.time`：
+
+```bash
+node src/index.js \
+  --url "https://kibana.kkday.com/app/dashboards#/view/d768bd60-71cf-11f0-ae80-ef95d33419ab" \
+  --date 2025-08-01 \
+  --outDir ./downloads \
+  --headless=false --slowMo=120
+```
+
 參數說明：
 - `--url`：Kibana 儀表板 URL。建議直接把 `_g.time` 的 from/to 帶在 URL（UTC 時間）。
 - `--outDir`：CSV 輸出資料夾，預設為專案內的 `downloads/`。
 - `--headless`：是否在背景模式執行，除錯時可設為 `false`。
 - `--slowMo`：除錯時可加入，例如 `--slowMo=100`。
 - `--timeout`：逾時毫秒數，預設 45000。
+- `--date`：台灣時區（GMT+8）的單一日期，格式 `YYYY-MM-DD`。若提供此參數，會以該日的 00:00:00+08:00 到 23:59:59+08:00 轉為 UTC，並覆蓋/插入 URL 的 `_g.time` 區間。
+
+說明：
+- 若 `--date` 與 URL 內已包含的 `_g` 同時存在，程式會以 `--date` 計算出的時間區間（to 為 23:59:59）覆蓋 URL 內的 `_g.time`。
+- 台灣不採夏令時間，時間偏移固定為 `+08:00`，因此以 `--date` 計算區間時可直接使用固定偏移。
 
 ## 注意事項
 - 會自動點擊登入頁的「Continue as Guest」。
