@@ -113,6 +113,67 @@ function upsertGInUrl(url, gStr) {
   return `${base}#${newHash}`;
 }
 
+async function waitPanelStable(page, panelEl, timeout = 12000) {
+  const start = Date.now();
+  const hasLoadingFn = `(el) => {
+    const selectors = [
+      '.euiLoadingSpinner',
+      '.euiLoadingContent',
+      '.euiProgress',
+      '[role="progressbar"]',
+      '[aria-busy="true"]',
+      '[data-test-subj*="loading"]',
+    ];
+    return selectors.some(sel => el.querySelector(sel));
+  }`;
+  while (Date.now() - start < timeout) {
+    try {
+      const done = await panelEl.getAttribute('data-render-complete').catch(() => null);
+      if (done === 'true') return true;
+    } catch (_) {}
+    let hasLoading = false;
+    try {
+      hasLoading = await panelEl.evaluate(new Function('el', `return (${hasLoadingFn})(el);`));
+    } catch (_) {}
+    if (!hasLoading) {
+      // 再確認一次穩定
+      await page.waitForTimeout(250);
+      try {
+        const again = await panelEl.evaluate(new Function('el', `return (${hasLoadingFn})(el);`));
+        if (!again) return true;
+      } catch (_) {}
+    }
+    await page.waitForTimeout(250);
+  }
+  return false;
+}
+
+async function waitInspectorReady(page, inspector, timeout = 12000) {
+  const start = Date.now();
+  const btn = inspector.getByRole('button', { name: /Download CSV/i }).first();
+  while (Date.now() - start < timeout) {
+    try {
+      const enabled = await btn.isEnabled().catch(() => false);
+      const loadingCount = await inspector
+        .locator('.euiLoadingSpinner, .euiLoadingContent, .euiProgress, [role="progressbar"], [aria-busy="true"]')
+        .count()
+        .catch(() => 0);
+      if (enabled && loadingCount === 0) {
+        // 穩定二次確認
+        await page.waitForTimeout(250);
+        const enabled2 = await btn.isEnabled().catch(() => false);
+        const loadingCount2 = await inspector
+          .locator('.euiLoadingSpinner, .euiLoadingContent, .euiProgress, [role="progressbar"], [aria-busy="true"]')
+          .count()
+          .catch(() => 0);
+        if (enabled2 && loadingCount2 === 0) return true;
+      }
+    } catch (_) {}
+    await page.waitForTimeout(250);
+  }
+  return false;
+}
+
 async function closeInspector(page, timeout = 8000) {
   let closed = false;
   try {
@@ -225,6 +286,8 @@ async function processPanelElement(page, panelEl, argv, defaultName = 'panel') {
   // 滾到可見並 hover
   try { await panelEl.scrollIntoViewIfNeeded(); } catch (_) {}
   try { await panelEl.hover(); } catch (_) {}
+  // 等待面板穩定（避免資料尚未載入完成就開 Inspector）
+  await waitPanelStable(page, panelEl, Math.min(argv.timeout, 15000)).catch(() => {});
 
   // 嘗試點擊 Panel options（多種 selector）
   const optionSelectors = [
@@ -277,6 +340,8 @@ async function processPanelElement(page, panelEl, argv, defaultName = 'panel') {
   }
 
   // 下載 CSV（Formatted）
+  // 先等 Inspector 內資料與按鈕就緒
+  await waitInspectorReady(page, inspector, Math.min(argv.timeout, 15000)).catch(() => {});
   await inspector.getByRole('button', { name: /Download CSV/i }).click({ timeout: argv.timeout });
   const csvDialog = page.getByRole('dialog');
   await csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).waitFor({ timeout: argv.timeout });
