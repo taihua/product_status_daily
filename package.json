@@ -1,0 +1,19 @@
+{
+  "name": "kibana-csv-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Automate downloading all dashboard panels' CSV (Formatted) from Kibana using Node.js + Playwright",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js --headless=false --slowMo=100",
+    "pw:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0",
+    "yargs": "^17.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
