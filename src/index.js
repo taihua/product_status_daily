@@ -316,48 +316,224 @@ async function processPanelElement(page, panelEl, argv, defaultName = 'panel') {
   }
   if (!clickedOptions) {
     console.warn(`[WARN] 找不到 Panel options，跳過：${panelName}`);
-    return;
+      return;
   }
 
-  // 點 Inspect
+    // 等待 Panel options 選單出現
+  await page.waitForTimeout(500);
+
+  // 除錯：檢查選單是否出現
   try {
-    // 有些是 menu，有些是 dialog，先不限定容器
-    await page.getByRole('button', { name: /^Inspect$/ }).first().click({ timeout: Math.min(8000, argv.timeout) });
+    const menuExists = await page.locator('[role="menu"], .euiContextMenu, .euiPopover').count();
+    console.log(`[DEBUG] 選單容器數量：${menuExists}`);
+  } catch (_) {}
+
+  // 優先嘗試 Inspect 流程
+  console.log(`[INFO] 優先使用 Inspect 流程處理：${panelName}`);
+
+  let inspectSuccess = false;
+  try {
+    // 尋找 Inspect 按鈕
+    const inspectSelectors = [
+      '[role="menuitem"]:has-text("Inspect")',
+      'button:has-text("Inspect")',
+      'button[aria-label="Inspect"]',
+      'button[title="Inspect"]',
+      'menuitem:has-text("Inspect")',
+      'a:has-text("Inspect")',
+      '[data-test-subj*="inspect"]',
+    ];
+
+    let foundInspect = false;
+    for (const sel of inspectSelectors) {
+      try {
+        const count = await page.locator(sel).count();
+        if (count > 0) {
+          console.log(`[DEBUG] 找到 Inspect 按鈕，使用選擇器: ${sel}`);
+          await page.locator(sel).first().click({ timeout: Math.min(8000, argv.timeout) });
+          foundInspect = true;
+          break;
+        }
+      } catch (_) {}
+    }
+
+    if (!foundInspect) {
+      // 如果找不到，嘗試原本的方法
+      await page.getByRole('button', { name: /^Inspect$/ }).first().click({ timeout: Math.min(8000, argv.timeout) });
+      foundInspect = true;
+    }
+
+    if (foundInspect) {
+      // 等待 Inspector
+      const inspector = page.getByRole('dialog');
+      try {
+        await inspector.getByRole('button', { name: /Download CSV/i }).waitFor({ timeout: Math.min(argv.timeout, 10000) });
+
+        // 找到了 Download CSV，執行 Inspect 下載流程
+        console.log(`[INFO] 在 Inspector 中找到 Download CSV`);
+
+        // 先等 Inspector 內資料與按鈕就緒
+        await waitInspectorReady(page, inspector, Math.min(argv.timeout, 15000)).catch(() => {});
+        await inspector.getByRole('button', { name: /Download CSV/i }).click({ timeout: argv.timeout });
+        const csvDialog = page.getByRole('dialog');
+        await csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).waitFor({ timeout: argv.timeout });
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: argv.timeout }),
+          csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).click(),
+        ]);
+
+        const suggested = await download.suggestedFilename();
+        const finalName = sanitizeFilename(`${panelName} - ${suggested || 'data.csv'}`);
+        const targetPath = await ensureUniquePath(path.join(argv.outDir, finalName));
+        await download.saveAs(targetPath);
+        console.log(`[OK] 已下載（透過 Inspect）：${targetPath}`);
+
+        // 關閉 Inspector（按右上角 X 優先）
+        await closeInspector(page, 8000);
+        inspectSuccess = true;
+
+      } catch (inspectorError) {
+        console.warn(`[WARN] Inspector 中沒有找到 Download CSV，關閉 Inspector 並嘗試 More 流程：${panelName}`);
+        console.warn(`[DEBUG] Inspector 錯誤：`, inspectorError.message);
+        // 確保關閉 Inspector
+        await closeInspector(page, 3000).catch(() => null);
+        inspectSuccess = false;
+      }
+    }
+
   } catch (e) {
-    console.warn(`[WARN] 找不到 Inspect，跳過：${panelName}`);
-    return;
+    console.warn(`[WARN] 無法開啟 Inspect，嘗試 More 流程：${panelName}`);
+    console.warn(`[DEBUG] Inspect 開啟錯誤：`, e.message);
+    inspectSuccess = false;
   }
 
-  // 等待 Inspector
-  const inspector = page.getByRole('dialog');
-  try {
-    await inspector.getByRole('button', { name: /Download CSV/i }).waitFor({ timeout: argv.timeout });
-  } catch (_) {
-    console.warn(`[WARN] Inspector 未出現或缺少 Download CSV，跳過：${panelName}`);
-    // 嘗試關閉側欄（點擊右上角 X）
-    await closeInspector(page, 3000).catch(() => null);
-    return;
+  // 如果 Inspect 流程失敗，嘗試 More -> Download CSV 流程
+  if (!inspectSuccess) {
+    console.log(`[INFO] 回退到 More -> Download CSV 流程：${panelName}`);
+
+    // 重新點擊 Panel options（因為可能已經關閉）
+    let reopenedOptions = false;
+    for (const sel of optionSelectors) {
+      try {
+        const btn = await panelEl.$(sel);
+        if (btn) {
+          await btn.click();
+          reopenedOptions = true;
+          break;
+        }
+      } catch (_) {}
+    }
+    if (!reopenedOptions) {
+      try {
+        await page.getByRole('button', { name: /Panel options/i }).first().click({ timeout: 2000 });
+        reopenedOptions = true;
+      } catch (_) {}
+    }
+
+    if (reopenedOptions) {
+      await page.waitForTimeout(500); // 給選單時間載入
+
+      // 尋找 More -> Download CSV
+      const downloadMenuSelectors = [
+        // 直接尋找 Download CSV
+        '[role="menuitem"]:has-text("Download CSV")',
+        'button:has-text("Download CSV")',
+        'a:has-text("Download CSV")',
+        // 尋找 More 然後 Download CSV
+        '[role="menuitem"]:has-text("More")',
+        'button:has-text("More")',
+        // 尋找一般的 Download
+        '[role="menuitem"]:has-text("Download")',
+        'button:has-text("Download")',
+      ];
+
+      let foundDownloadInMenu = false;
+      for (const sel of downloadMenuSelectors) {
+        try {
+          const count = await page.locator(sel).count();
+          if (count > 0) {
+            const text = await page.locator(sel).first().textContent();
+            console.log(`[DEBUG] 找到選單項目: "${text}" (選擇器: ${sel})`);
+
+            if (text?.includes('Download CSV') || text?.includes('Download as CSV')) {
+              await page.locator(sel).first().click({ timeout: 5000 });
+              foundDownloadInMenu = true;
+              console.log(`[INFO] 直接點擊 ${text}`);
+              break;
+            } else if (text?.includes('More')) {
+              // 點擊 More 然後尋找 Download CSV
+              await page.locator(sel).first().click({ timeout: 5000 });
+              await page.waitForTimeout(500);
+
+              const csvInMore = await page.locator('[role="menuitem"]:has-text("Download CSV"), button:has-text("Download CSV")').count();
+              if (csvInMore > 0) {
+                await page.locator('[role="menuitem"]:has-text("Download CSV"), button:has-text("Download CSV")').first().click({ timeout: 5000 });
+                foundDownloadInMenu = true;
+                console.log(`[INFO] 透過 More 選單找到並點擊 Download CSV`);
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 如果在 More 選單中找到了下載功能，處理下載流程
+      if (foundDownloadInMenu) {
+        try {
+          console.log(`[INFO] 等待 More 選單下載開始...`);
+
+          // 縮短等待時間，避免長時間等待
+          const downloadPromise = page.waitForEvent('download', { timeout: Math.min(argv.timeout, 15000) });
+
+          // 檢查是否有格式選擇對話框
+          let hasFormatDialog = false;
+          try {
+            const csvDialog = page.getByRole('dialog');
+            await csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).waitFor({ timeout: 2000 });
+            hasFormatDialog = true;
+            console.log(`[DEBUG] 找到格式選擇對話框`);
+          } catch (_) {
+            console.log(`[DEBUG] 沒有格式選擇對話框，可能直接下載`);
+          }
+
+          let download;
+          if (hasFormatDialog) {
+            // 有對話框，點擊 Formatted CSV
+            const csvDialog = page.getByRole('dialog');
+            const [downloadEvent] = await Promise.all([
+              downloadPromise,
+              csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).click(),
+            ]);
+            download = downloadEvent;
+          } else {
+            // 沒有對話框，直接等待下載
+            download = await downloadPromise;
+          }
+
+          const suggested = await download.suggestedFilename();
+          const finalName = sanitizeFilename(`${panelName} - ${suggested || 'data.csv'}`);
+          const targetPath = await ensureUniquePath(path.join(argv.outDir, finalName));
+          await download.saveAs(targetPath);
+          console.log(`[OK] 已下載（透過 More 選單）：${targetPath}`);
+
+          // 關閉可能的對話框
+          try {
+            await page.keyboard.press('Escape');
+          } catch (_) {}
+
+        } catch (e) {
+          console.warn(`[WARN] More 選單下載失敗：${panelName}`);
+          console.warn(`[DEBUG] More 下載錯誤：`, e.message);
+        }
+      } else {
+        console.warn(`[WARN] 在 More 選單中也找不到下載選項，跳過：${panelName}`);
+      }
+    } else {
+      console.warn(`[WARN] 無法重新開啟 Panel options，跳過：${panelName}`);
+    }
   }
 
-  // 下載 CSV（Formatted）
-  // 先等 Inspector 內資料與按鈕就緒
-  await waitInspectorReady(page, inspector, Math.min(argv.timeout, 15000)).catch(() => {});
-  await inspector.getByRole('button', { name: /Download CSV/i }).click({ timeout: argv.timeout });
-  const csvDialog = page.getByRole('dialog');
-  await csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).waitFor({ timeout: argv.timeout });
-  const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: argv.timeout }),
-    csvDialog.getByRole('button', { name: /^Formatted CSV$/i }).click(),
-  ]);
 
-  const suggested = await download.suggestedFilename();
-  const finalName = sanitizeFilename(`${panelName} - ${suggested || 'data.csv'}`);
-  const targetPath = await ensureUniquePath(path.join(argv.outDir, finalName));
-  await download.saveAs(targetPath);
-  console.log(`[OK] 已下載：${targetPath}`);
-
-  // 關閉 Inspector（按右上角 X 優先）
-  await closeInspector(page, 8000);
 
   // 關閉可能被觸發的新分頁（例如下載時彈出的空白/暫存頁），避免影響下一個面板
   try {

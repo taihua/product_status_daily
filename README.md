@@ -1,6 +1,6 @@
 # Kibana CSV 自動下載（Node.js + Playwright）
 
-自動化在 Kibana 儀表板中，逐一開啟各個面板的 Inspect → Download CSV → Formatted CSV，並將檔案下載到本機指定資料夾。
+自動化在 Kibana 儀表板中，逐一點擊各個面板的 Panel options → More → Download CSV → Formatted CSV，並將檔案下載到本機指定資料夾。若 More 選單中沒有 Download CSV 選項，會自動回退到 Inspect 流程。
 
 ## 需求
 
@@ -49,7 +49,8 @@ node src/index.js \
 
 ## 注意事項
 - 會自動點擊登入頁的「Continue as Guest」。
-- 只針對有「Inspect」→「Download CSV」的面板，沒有的會自動略過並繼續。
+- 優先嘗試使用「More」→「Download CSV」流程，若失敗會自動回退到「Inspect」→「Download CSV」流程。
+- 只針對有下載功能的面板，沒有的會自動略過並繼續。
 - 下載後檔名格式為：`<面板標題> - <Kibana 建議檔名>.csv`，若重複會自動在檔名後加 `(n)`。
 - 若有需要下載 Raw CSV，可在程式內將 `Formatted CSV` 改為 `Raw CSV`。
 
