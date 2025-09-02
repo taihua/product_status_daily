@@ -543,8 +543,10 @@ async function processPanelElement(page, panelEl, argv, defaultName = 'panel') {
         try { await p.close({ runBeforeUnload: true }); } catch (_) {}
       }
     }
-    // 將主頁帶回前景
-    try { await page.bringToFront(); } catch (_) {}
+    // 在 headless 模式下，將主頁帶回前景以確保穩定；在非 headless 模式下則避免，以免搶佔使用者視窗
+    if (argv.headless) {
+      try { await page.bringToFront(); } catch (_) {}
+    }
   } catch (_) {}
 }
 
